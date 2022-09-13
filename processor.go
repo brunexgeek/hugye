@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net"
 )
 
@@ -25,6 +24,7 @@ type Job struct {
 
 type Processor struct {
 	workers []WorkerContext
+	extdns  *net.UDPAddr
 }
 
 type WorkerContext struct {
@@ -55,7 +55,6 @@ func (f future) GetContext() *WorkerContext {
 func (p *Processor) StartWorker(f func(*WorkerContext) error) Future {
 	var result error
 	ctx := &WorkerContext{processor: p, input: make(chan Job, 5)}
-	fmt.Println(ctx)
 	c := make(chan struct{})
 	go func() {
 		defer close(c)
