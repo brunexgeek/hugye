@@ -217,7 +217,46 @@ func ValidateMessage(msg []byte) bool {
 	if !result {
 		fmt.Println("unable to header DNS header")
 	}
-	fmt.Println(msg)
-	fmt.Println(header)
 	return header.qst_count == 1
+}
+
+func read_qname(buf []byte, off int, value *string) (int, error) {
+	if off >= len(buf) {
+		return 0, fmt.Errorf("Out of bounds")
+	}
+	cur := off
+	out := make([]byte, 0, 12)
+
+	for buf[cur] != 0 {
+		// check whether we have a pointer (RFC-1035 4.1.4. Message compression)
+		if (buf[cur] & 0xC0) == 0xC0 {
+			if cur+3 >= len(buf) {
+				return 0, fmt.Errorf("Out of bounds")
+			}
+			cur = (int(buf[cur]&0x3F) << 8) | int(buf[cur+1])
+			if cur >= len(buf) {
+				return 0, fmt.Errorf("Out of bounds")
+			}
+			_, err := read_qname(buf, cur, value)
+			return cur, err
+		}
+
+		// extract current group
+		size := int(buf[cur] & 0x3F)
+		cur++
+		for i := 0; i < size; i++ {
+			c := buf[cur]
+			if c >= 'A' && c <= 'Z' {
+				c += 32
+			}
+			out = append(out, c)
+			cur++
+		}
+		if buf[cur] != 0 {
+			out = append(out, '.')
+		}
+	}
+
+	*value = *value + string(out)
+	return cur, nil
 }
