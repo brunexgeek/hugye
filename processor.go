@@ -3,7 +3,9 @@ package main
 import (
 	"container/list"
 	"context"
+	"fmt"
 	"net"
+	"time"
 )
 
 type Job struct {
@@ -56,7 +58,7 @@ func (f internal_worker) GetContext() *WorkerContext {
 }
 
 // Exec executes the async function
-func (p *Processor) StartWorker(f func(*WorkerContext) error) (Worker, error) {
+func (p *Processor) StartWorker() (Worker, error) {
 	resolver, err := MakeResolver(p.extdns)
 	if err != nil {
 		return nil, err
@@ -64,13 +66,13 @@ func (p *Processor) StartWorker(f func(*WorkerContext) error) (Worker, error) {
 	var result error
 	ctx := &WorkerContext{
 		processor: p,
-		input:     make(chan *Job, 5),
+		input:     make(chan *Job, 20),
 		resolver:  resolver,
 	}
 	c := make(chan struct{})
 	go func() {
 		defer close(c)
-		result = f(ctx)
+		result = worker_routine(ctx)
 	}()
 	worker := internal_worker{
 		await: func(ctx context.Context) error {
@@ -96,4 +98,103 @@ func (p *Processor) Await() {
 	for it := p.workers.Front(); it != nil; it = it.Next() {
 		it.Value.(*internal_worker).Await()
 	}
+}
+
+func preprocess_job(ctx *WorkerContext, job *Job) (*Job, error) {
+	ValidateMessage(job.request.bytes)
+
+	// TODO: try cache
+
+	// send query to external DNS
+	id, error := ctx.resolver.Send(job.request.bytes, ctx.resolver.NextId())
+	if error != nil {
+		return nil, error
+	}
+	job.id = id
+	return job, nil
+}
+
+func worker_routine(ctx *WorkerContext) error {
+	wait_list := make(map[uint16]*Job)
+
+	for running {
+		//
+		// Accept new jobs
+		//
+		{
+			var timeout time.Duration = 500
+			if len(wait_list) > 0 {
+				timeout = 5
+			}
+			select {
+			case job := <-ctx.input:
+				job, err := preprocess_job(ctx, job)
+				if err != nil {
+					fmt.Println(err)
+					continue
+				}
+				if job != nil {
+					fmt.Printf("Job #%d accepted\n", job.id)
+					wait_list[job.id] = job
+				}
+			case <-time.After(timeout * time.Millisecond):
+
+			}
+		}
+
+		//
+		// Process each UDP response
+		//
+		for true {
+			//fmt.Println("Checking for responses")
+			buffer, err := ctx.resolver.Receive(1)
+			if err != nil {
+				//fmt.Println(err)
+				break
+			}
+
+			var id uint16
+			_, err = read_u16(buffer, 0, &id)
+			if err != nil {
+				continue
+			}
+			fmt.Printf("-- Found response #%d\n", id)
+
+			job := wait_list[id]
+			if job != nil {
+				job.response.bytes = buffer
+				// replace the ID
+				write_u16(job.response.bytes, 0, job.request.oid)
+				// send response to client
+				size, err := job.conn.WriteTo(job.response.bytes, job.request.remote)
+				if err != nil {
+					fmt.Println(err)
+				} else if size != len(job.response.bytes) {
+					fmt.Println("Unable to send all data")
+				}
+				delete(wait_list, id)
+			} else {
+				fmt.Printf("-- Job #%d not in waiting list", id)
+			}
+		}
+
+		//
+		// Check jobs in the waiting list to finish or discard them.
+		//
+	}
+	return fmt.Errorf("Worker done")
+}
+
+func MakeJob(conn *net.UDPConn, addr *net.UDPAddr, buf []byte, size int) *Job {
+	job := Job{}
+	job.conn = conn
+	job.start_time = time.Now().UnixMilli()
+	job.request.bytes = buf[:size]
+	job.request.remote = addr
+
+	var oid uint16
+	read_u16(job.request.bytes, 0, &oid)
+	job.request.oid = oid
+
+	return &job
 }
