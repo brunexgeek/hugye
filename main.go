@@ -24,47 +24,103 @@ func install_signal_hook() {
 	}()
 }
 
-func process_job(ctx *WorkerContext, job *Job) error {
+func preprocess_job(ctx *WorkerContext, job *Job) (*Job, error) {
 	ValidateMessage(job.request.bytes)
 
-	conn, error := net.DialUDP("udp4", nil, ctx.processor.extdns)
+	// TODO: try cache
+
+	// send query to external DNS
+	id, error := ctx.resolver.Send(job.request.bytes, ctx.resolver.NextId())
 	if error != nil {
-		return error
+		return nil, error
 	}
-	size, error := conn.Write(job.request.bytes)
-	if error != nil {
-		return error
-	} else if size < len(job.request.bytes) {
-		return fmt.Errorf("Sent less bytes than expected")
-	}
-	fmt.Println("Message sent to external DNS")
-	buffer := make([]byte, 1024)
-	conn.SetReadDeadline(time.Now().Add(time.Second * 3))
-	size, error = conn.Read(buffer)
-	if error != nil {
-		return error
-	}
-	job.response.bytes = buffer[:size]
-	fmt.Printf("Message received from external DNS (%d bytes)", size)
-	size, error = job.conn.WriteToUDP(job.response.bytes, job.request.remote)
-	if error != nil {
-		return error
-	} else if size < len(job.response.bytes) {
-		return fmt.Errorf("Sent less bytes than expected")
-	}
-	return nil
+	job.id = id
+	return job, nil
 }
 
 func worker(ctx *WorkerContext) error {
+	wait_list := make(map[uint16]*Job)
+
 	for running {
-		select {
-		case job := <-ctx.input:
-			process_job(ctx, &job)
-		case <-time.After(4 * time.Second):
-			continue
+		//
+		// Accept new jobs
+		//
+		{
+			var timeout time.Duration = 500
+			if len(wait_list) > 0 {
+				timeout = 5
+			}
+			select {
+			case job := <-ctx.input:
+				job, err := preprocess_job(ctx, job)
+				if err != nil {
+					fmt.Println(err)
+					continue
+				}
+				if job != nil {
+					fmt.Printf("Job #%d accepted\n", job.id)
+					wait_list[job.id] = job
+				}
+			case <-time.After(timeout * time.Millisecond):
+
+			}
 		}
+
+		//
+		// Process each UDP response
+		//
+		for true {
+			//fmt.Println("Checking for responses")
+			buffer, err := ctx.resolver.Receive(1)
+			if err != nil {
+				//fmt.Println(err)
+				break
+			}
+
+			var id uint16
+			_, err = read_u16(buffer, 0, &id)
+			if err != nil {
+				continue
+			}
+			fmt.Printf("-- Found response #%d", id)
+
+			job := wait_list[id]
+			if job != nil {
+				job.response.bytes = buffer
+				// replace the ID
+				write_u16(job.response.bytes, 0, job.request.oid)
+				// send response to client
+				size, err := job.conn.WriteTo(job.response.bytes, job.request.remote)
+				if err != nil {
+					fmt.Println(err)
+				} else if size != len(job.response.bytes) {
+					fmt.Println("Unable to send all data")
+				}
+				delete(wait_list, id)
+			} else {
+				fmt.Printf("-- Job #%d not in waiting list", id)
+			}
+		}
+
+		//
+		// Check jobs in the waiting list to finish or discard them.
+		//
 	}
 	return fmt.Errorf("Worker done")
+}
+
+func MakeJob(conn *net.UDPConn, addr *net.UDPAddr, buf []byte, size int) *Job {
+	job := Job{}
+	job.conn = conn
+	job.start_time = time.Now().UnixMilli()
+	job.request.bytes = buf[:size]
+	job.request.remote = addr
+
+	var oid uint16
+	read_u16(job.request.bytes, 0, &oid)
+	job.request.oid = oid
+
+	return &job
 }
 
 func main() {
@@ -78,12 +134,16 @@ func main() {
 		return
 	}
 	conn, error := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(address))
-	dur := time.Second * 5
+	dur := time.Second * 1
 	conn.SetDeadline(time.Now().Add(dur))
 	buffer := make([]byte, 1024)
 
 	processor := Processor{extdns: net.UDPAddrFromAddrPort(extdns)}
-	future := processor.StartWorker(worker)
+	worker, err := processor.StartWorker(worker)
+	if worker == nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 	fmt.Println("Worker started")
 
 	for running {
@@ -94,13 +154,9 @@ func main() {
 			continue
 		}
 		fmt.Println("Job found")
-		job := Job{}
-		job.conn = conn
-		job.start_time = time.Now().UnixMilli()
-		job.request.bytes = buffer[:size]
-		job.request.remote = remote
-		future.GetContext().input <- job
+		job := MakeJob(conn, remote, buffer, size)
+		worker.GetContext().input <- job
 		fmt.Println("Job sent")
 	}
-	future.Await()
+	processor.Await()
 }
