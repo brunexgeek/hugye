@@ -1,19 +1,27 @@
-package main
+package binary
 
 import (
 	"fmt"
 )
 
-func read_u16(buf []byte, off int, value *uint16) (int, error) {
+func Read8(buf []byte, off int, value *uint8) (int, error) {
+	if off+1 >= len(buf) {
+		return 0, fmt.Errorf("Out of range")
+	}
+	*value = buf[off]
+	return off + 1, nil
+}
+
+func Read16(buf []byte, off int, value *uint16) (int, error) {
 	if off+1 >= len(buf) {
 		return 0, fmt.Errorf("Out of range")
 	}
 	*value = uint16(buf[off]) << 8
 	*value |= uint16(buf[off+1])
-	return off + 1, nil
+	return off + 2, nil
 }
 
-func write_u16(buf []byte, off int, value uint16) (int, error) {
+func Write16(buf []byte, off int, value uint16) (int, error) {
 	if off+1 >= len(buf) {
 		return 0, fmt.Errorf("Out of range")
 	}
@@ -22,7 +30,7 @@ func write_u16(buf []byte, off int, value uint16) (int, error) {
 	return off + 2, nil
 }
 
-func write_u32(buf []byte, off int, value uint32) (int, error) {
+func Write32(buf []byte, off int, value uint32) (int, error) {
 	if off+3 >= len(buf) {
 		return 0, fmt.Errorf("Out of range")
 	}

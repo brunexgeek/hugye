@@ -1,35 +1,38 @@
-package main
+package dns
 
 import (
 	"fmt"
 	"net"
 	"time"
+
+	"github.com/brunexgeek/hugye/pkg/binary"
+	"github.com/brunexgeek/hugye/pkg/domain"
 )
 
-type Resolver struct {
+type resolver struct {
 	conn *net.UDPConn
-	id   uint16
+	id   *uint16
 }
 
-func MakeResolver(extdns *net.UDPAddr) (*Resolver, error) {
+func NewResolver(extdns *net.UDPAddr) (domain.Resolver, error) {
 	conn, err := net.DialUDP("udp4", nil, extdns)
 	if err != nil {
 		return nil, err
 	}
-	return &Resolver{conn: conn, id: 0}, nil
+	return &resolver{conn: conn, id: new(uint16)}, nil
 }
 
-func (r *Resolver) Send(buf []byte, id uint16) (uint16, error) {
+func (r *resolver) Send(buf []byte, id uint16) (uint16, error) {
 	// replace the current ID
 	var oid uint16
-	read_u16(buf, 0, &oid)
-	write_u16(buf, 0, id)
+	binary.Read16(buf, 0, &oid)
+	binary.Write16(buf, 0, id)
 
 	// send query
 	size, err := r.conn.Write(buf)
 
 	// recover the original ID
-	write_u16(buf, 0, oid)
+	binary.Write16(buf, 0, oid)
 
 	if err != nil {
 		return 0, err
@@ -40,7 +43,7 @@ func (r *Resolver) Send(buf []byte, id uint16) (uint16, error) {
 	return id, nil
 }
 
-func (r *Resolver) Receive(timeout int) ([]byte, error) {
+func (r *resolver) Receive(timeout int) ([]byte, error) {
 	r.conn.SetReadDeadline(time.Now().Add(time.Duration(timeout) * time.Millisecond))
 	buf := make([]byte, 1024)
 	size, err := r.conn.Read(buf)
@@ -50,10 +53,10 @@ func (r *Resolver) Receive(timeout int) ([]byte, error) {
 	return buf[:size], nil
 }
 
-func (r *Resolver) NextId() uint16 {
-	r.id++
-	if r.id == 0 {
-		r.id++
+func (r *resolver) NextId() uint16 {
+	(*r.id)++
+	if *r.id == 0 {
+		(*r.id)++
 	}
-	return r.id
+	return *r.id
 }
