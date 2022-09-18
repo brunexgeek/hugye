@@ -244,7 +244,7 @@ func ValidateMessage(buf []byte) bool {
 }
 
 func read_question(buf []byte, off int, value *Question) (int, error) {
-	off, err := ReadDomain(buf, off, &value.Name)
+	off, err := read_domain(buf, off, &value.Name)
 	if err != nil {
 		return 0, err
 	}
@@ -253,7 +253,7 @@ func read_question(buf []byte, off int, value *Question) (int, error) {
 	return off, nil
 }
 
-func ReadDomain(buf []byte, off int, value *string) (int, error) {
+func read_domain(buf []byte, off int, value *string) (int, error) {
 	if off >= len(buf) {
 		return 0, fmt.Errorf("Out of bounds")
 	}
@@ -270,7 +270,7 @@ func ReadDomain(buf []byte, off int, value *string) (int, error) {
 			if cur >= len(buf) {
 				return 0, fmt.Errorf("Out of bounds")
 			}
-			_, err := ReadDomain(buf, cur, value)
+			_, err := read_domain(buf, cur, value)
 			return cur, err
 		}
 

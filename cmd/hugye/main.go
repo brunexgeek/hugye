@@ -131,6 +131,12 @@ func worker_routine(ctx *worker.WorkerContext) error {
 }
 
 func main() {
+	config, err := LoadConfig("/media/dados/outros/dns-blocker/config.json")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(config)
+
 	install_signal_hook()
 	address, error := netip.ParseAddrPort("127.0.0.7:5300")
 	if error != nil {
