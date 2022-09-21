@@ -25,8 +25,9 @@ type Job struct {
 		max   int // number of external DNS queries made
 		count int // number of external DNS responses received
 	}
-	Id        uint16 // external DNS message id (zero means empty)
-	StartTime int64  // time which the processing started
+	//Id        uint16 // external DNS message id (zero means empty)
+	StartTime int64 // time which the processing started
+	Ticket    *dns.Ticket
 }
 
 type Processor struct {
@@ -38,7 +39,7 @@ type WorkerContext struct {
 	Processor *Processor
 	Input     chan *Job
 	output    chan *Job
-	Resolver  domain.Resolver // connection with external DNS
+	Resolver  *dns.Resolver // connection with external DNS
 }
 
 type Worker interface {
@@ -60,7 +61,7 @@ func (f internal_worker) GetContext() *WorkerContext {
 }
 
 // Exec executes the async function
-func (p *Processor) StartWorker(resolver domain.Resolver, fun func(*WorkerContext) error) (Worker, error) {
+func (p *Processor) StartWorker(resolver *dns.Resolver, fun func(*WorkerContext) error) (Worker, error) {
 	var result error
 	ctx := &WorkerContext{
 		Processor: p,

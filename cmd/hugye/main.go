@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"net"
-	"net/netip"
 	"os"
 	"os/signal"
 	"time"
@@ -30,16 +29,21 @@ func install_signal_hook() {
 }
 
 func preprocess_job(ctx *worker.WorkerContext, job *worker.Job) (*worker.Job, error) {
-	//ValidateMessage(job.Request.Bytes)
-
-	// TODO: try cache
-
-	// send query to external DNS
-	id, error := ctx.Resolver.Send(job.Request.Bytes, ctx.Resolver.NextId())
-	if error != nil {
-		return nil, error
+	response := ctx.Processor.Cache.Get(job.Request.Message.Question[0].Name,
+		job.Request.Message.Question[0].Type)
+	if response != nil {
+		job.Response.Bytes = response
+		job.Response.Done = true
+		job.Ticket = &dns.Ticket{Id: ctx.Resolver.NextId(), Conn: nil} // TODO: make ticket nil here
+		fmt.Println("-- Cache used")
+	} else {
+		// send query to external DNS
+		ticket, error := ctx.Resolver.Send(job.Request.Message.Question[0].Name, job.Request.Bytes, ctx.Resolver.NextId())
+		if error != nil {
+			return nil, error
+		}
+		job.Ticket = ticket
 	}
-	job.Id = id
 	return job, nil
 }
 
@@ -64,15 +68,7 @@ func worker_routine(ctx *worker.WorkerContext) error {
 				}
 				if job != nil {
 					//fmt.Printf("Job #%d accepted\n", job.Id)
-					response := ctx.Processor.Cache.Get(job.Request.Message.Question[0].Name,
-						job.Request.Message.Question[0].Type)
-					if response != nil {
-						job.Response.Bytes = response
-						job.Response.Done = true
-						fmt.Println("-- Cache used")
-					}
-					wait_list[job.Id] = job
-
+					wait_list[job.Ticket.Id] = job
 				}
 			case <-time.After(timeout * time.Millisecond):
 
@@ -82,9 +78,12 @@ func worker_routine(ctx *worker.WorkerContext) error {
 		//
 		// Process each UDP response
 		//
-		for true {
+		for _, job := range wait_list {
+			if job.Response.Done || job.Ticket == nil {
+				continue
+			}
 			//fmt.Println("Checking for responses")
-			buffer, err := ctx.Resolver.Receive(1)
+			buffer, err := ctx.Resolver.Receive(job.Ticket, 1)
 			if err != nil {
 				//fmt.Println(err)
 				break
@@ -97,21 +96,19 @@ func worker_routine(ctx *worker.WorkerContext) error {
 			}
 			//fmt.Printf("-- Found response #%d\n", id)
 
-			job := wait_list[id]
-			if job != nil {
-				job.Response.Bytes = buffer
-				job.Response.Done = true
+			job.Response.Bytes = buffer
+			job.Response.Done = true
 
-				ctx.Processor.Cache.Set(job.Request.Message.Question[0].Name,
-					job.Request.Message.Question[0].Type, job.Response.Bytes)
-			} else {
-				//fmt.Printf("-- Job #%d not in waiting list", id)
-			}
+			job.Ticket.Conn = nil
+
+			ctx.Processor.Cache.Set(job.Request.Message.Question[0].Name,
+				job.Request.Message.Question[0].Type, job.Response.Bytes)
 		}
 
 		//
 		// Check jobs in the waiting list to finish or discard them.
 		//
+		// TODO: merge with the above loop?
 		for _, job := range wait_list {
 			if job.Response.Done {
 				// replace the ID
@@ -123,7 +120,7 @@ func worker_routine(ctx *worker.WorkerContext) error {
 				} else if size != len(job.Response.Bytes) {
 					fmt.Println("Unable to send all data")
 				}
-				delete(wait_list, job.Id)
+				delete(wait_list, job.Ticket.Id)
 			}
 		}
 	}
@@ -131,29 +128,24 @@ func worker_routine(ctx *worker.WorkerContext) error {
 }
 
 func main() {
-	config, err := LoadConfig("/media/dados/outros/dns-blocker/config.json")
+	install_signal_hook()
+
+	config, err := LoadConfig(os.Args[1])
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(config)
 
-	install_signal_hook()
-	address, error := netip.ParseAddrPort("127.0.0.7:5300")
-	if error != nil {
-		return
+	conn, err := net.ListenUDP("udp4", config.Binding)
+	if err != nil {
+		panic(err)
 	}
-	extdns, error := netip.ParseAddrPort("8.8.8.8:53")
-	if error != nil {
-		return
-	}
-	conn, error := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(address))
 	dur := time.Second * 1
 	conn.SetDeadline(time.Now().Add(dur))
 	buffer := make([]byte, 1024)
 
 	cache := cache.NewCache()
 	processor := worker.NewProcessor(cache)
-	resolver, err := dns.NewResolver(net.UDPAddrFromAddrPort(extdns))
+	resolver, err := dns.NewResolver(config.ExternalDNS)
 	work, err := processor.StartWorker(resolver, worker_routine)
 	if work == nil {
 		fmt.Println(err)

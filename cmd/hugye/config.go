@@ -4,13 +4,16 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"strings"
 
 	"github.com/brunexgeek/hugye/pkg/dfa"
+	"github.com/brunexgeek/hugye/pkg/dns"
 )
 
-type Config struct {
+type ConfigData struct {
 	Blacklist  []string `json:"blacklist"`
 	Whitelist  []string `json:"whitelist"`
 	Monitoring []string `json:"monitoring"`
@@ -27,6 +30,16 @@ type Config struct {
 		TTL  int `json:"ttl"`
 		Size int `json:"size"`
 	} `json:"cache"`
+}
+
+type Config struct {
+	Monitoring  []string
+	Binding     *net.UDPAddr
+	ExternalDNS []dns.ExternalDNS
+	Cache       struct {
+		TTL  int
+		Size int
+	}
 	Blocked *dfa.Tree
 	Allowed *dfa.Tree
 }
@@ -84,7 +97,7 @@ func LoadRules(file string, tree *dfa.Tree) error {
 }
 
 func LoadConfig(path string) (*Config, error) {
-	config := Config{}
+	config := ConfigData{}
 
 	reader, err := os.OpenFile(path, os.O_RDONLY, os.ModePerm.Perm())
 	if err != nil {
@@ -101,13 +114,39 @@ func LoadConfig(path string) (*Config, error) {
 		json.Unmarshal(buf, &config)
 	}
 
-	config.Blocked = dfa.NewTree()
+	binding, err := netip.ParseAddrPort(fmt.Sprintf("%s:%d", config.Binding.Address, config.Binding.Port))
+	if err != nil {
+		return nil, err
+	}
+
+	result := Config{Binding: net.UDPAddrFromAddrPort(binding)}
+	result.ExternalDNS = make([]dns.ExternalDNS, 0, len(config.ExternalDNS))
+
+	for _, item := range config.ExternalDNS {
+		addr, err := netip.ParseAddrPort(item.Address + ":53")
+		if err != nil {
+			continue
+		}
+
+		var tree *dfa.Tree
+		if len(item.Targets) > 0 {
+			tree = dfa.NewTree()
+			for _, rule := range item.Targets {
+				tree.AddPattern(rule)
+			}
+		}
+
+		result.ExternalDNS = append(result.ExternalDNS,
+			dns.ExternalDNS{Address: net.UDPAddrFromAddrPort(addr), Name: item.Name, Targets: tree})
+	}
+
+	result.Blocked = dfa.NewTree()
 	if config.Blacklist == nil {
 		return nil, fmt.Errorf("Unable to create tree")
 	}
 	for _, path := range config.Blacklist {
-		LoadRules(path, config.Blocked)
+		LoadRules(path, result.Blocked)
 	}
 
-	return &config, nil
+	return &result, nil
 }
