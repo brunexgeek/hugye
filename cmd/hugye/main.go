@@ -100,6 +100,7 @@ func worker_routine(ctx *worker.WorkerContext) error {
 			job.Response.Done = true
 
 			job.Ticket.Conn = nil
+			//job.Ticket = nil
 
 			ctx.Processor.Cache.Set(job.Request.Message.Question[0].Name,
 				job.Request.Message.Question[0].Type, job.Response.Bytes)

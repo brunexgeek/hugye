@@ -3,6 +3,7 @@ package dns
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"time"
 
 	"github.com/brunexgeek/hugye/pkg/binary"
@@ -13,13 +14,13 @@ type Resolver struct {
 	id     uint16
 	extdns []ExternalDNS
 	defdns *ExternalDNS
+	conn   *net.UDPConn
 }
 
 type ExternalDNS struct {
 	Address *net.UDPAddr
 	Name    string
 	Targets *dfa.Tree
-	conn    *net.UDPConn
 }
 
 type Ticket struct {
@@ -27,15 +28,22 @@ type Ticket struct {
 	Conn *net.UDPConn
 }
 
+var last_port int = 63009
+
 func NewResolver(extdns []ExternalDNS) (*Resolver, error) {
 	result := &Resolver{extdns: extdns}
-	var err error = nil
+	last_port++
+	addr, err := netip.ParseAddrPort(fmt.Sprintf("0.0.0.0:%d", last_port))
+	if err != nil {
+		return nil, err
+	}
+	result.conn, err = net.ListenUDP("udp4", net.UDPAddrFromAddrPort(addr))
+	if err != nil {
+		return nil, err
+	}
+
 	for i := 0; i < len(result.extdns); i++ {
 		item := &result.extdns[i]
-		item.conn, err = net.DialUDP("udp4", nil, item.Address)
-		if err != nil {
-			return nil, err
-		}
 		if item.Targets == nil {
 			result.defdns = item
 		}
@@ -52,18 +60,18 @@ func (r *Resolver) Send(host string, buf []byte, id uint16) (*Ticket, error) {
 	binary.Read16(buf, 0, &oid)
 	binary.Write16(buf, 0, id)
 
-	var conn *net.UDPConn = r.defdns.conn
+	var addr = r.defdns.Address
 	if len(host) > 0 {
 		for _, item := range r.extdns {
 			if item.Targets != nil && item.Targets.Match(host) {
-				conn = item.conn
+				addr = item.Address
 				break
 			}
 		}
 	}
 
 	// send query
-	size, err := conn.Write(buf)
+	size, err := r.conn.WriteToUDP(buf, addr)
 
 	// recover the original ID
 	binary.Write16(buf, 0, oid)
@@ -74,7 +82,7 @@ func (r *Resolver) Send(host string, buf []byte, id uint16) (*Ticket, error) {
 		return nil, fmt.Errorf("Unable to send all data")
 	}
 
-	return &Ticket{Id: id, Conn: conn}, nil
+	return &Ticket{Id: id, Conn: r.conn}, nil
 }
 
 func (r *Resolver) Receive(ticket *Ticket, timeout int) ([]byte, error) {

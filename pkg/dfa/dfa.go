@@ -82,7 +82,7 @@ func (t *Tree) Match(host string) bool {
 	off := 0
 	last := len(value) - 1
 	for p, c := range value {
-		fmt.Printf("Found %c %d\n", c, len(t.slots))
+		//fmt.Printf("Found %c %d\n", c, len(t.slots))
 		idx := char_to_index(c)
 		if t.slots[off+idx]&TERMINAL_BIT != 0 {
 			return true
